@@ -1,0 +1,550 @@
+#include "reg51.h"
+
+#define A_PW_SET 1 //管理员密码设定状态
+#define U_PW_SET 2 //管理员密码设定状态
+#define LOCKED 3 //上锁状态
+#define UNLOCKED 4 //解锁状态
+#define LOCKING 5 //锁定状态
+#define U_UNLOCK_PW 6//用户密码输入状态
+#define A_UNLOCK_PW 7 //管理员解锁密码(Unlock password)状态
+
+#define K_OK 0x13  //0x13 是 OK 按键的键值
+
+//下面定义的是LED数码管要显示的字符对应的段代码宏定义
+#define SEG_0 0x3f
+#define SEG_1 0x06
+#define SEG_2 0x5b
+#define SEG_3 0x4f
+#define SEG_4 0x66
+#define SEG_5 0x6d
+#define SEG_6 0x7d
+#define SEG_7 0x07
+#define SEG_8 0x7f
+#define SEG_9 0x6f
+#define SEG_A 0x77
+#define SEG_b 0x7c
+#define SEG_C 0x39
+#define SEG_d 0x5e
+#define SEG_E 0x79
+#define SEG_F 0x71
+#define SEG_HORI 0x40 //横线
+#define SEG_NULL 0x00 //灭所有LED段
+
+//sbit buzzer = P1 ^ 2;
+sbit buzzer = P1 ^ 0;
+
+code unsigned char led_map[] = {
+    0x3f, 0x06, 0x5b, 0x4f, 0x66, 0x6d, 0x7d, 0x07,
+    0x7f, 0x6f, 0x77, 0x7c, 0x39, 0x5e, 0x79, 0x71
+};
+
+unsigned char state;
+//unsigned char last_state;
+unsigned char pw_err = 0;
+unsigned char pw_ok = 0;
+unsigned char xdata *p_row = 0x8001;
+unsigned char xdata *p_column = 0x8002;
+unsigned char xdata* dig_led_bit = 0x8002;
+unsigned char xdata* dig_led_seg = 0x8004;
+
+ledbuf[6];
+
+unsigned char A_PW[16] = {2, 3, 2, 3, 2, 3}; //管理员默认密码
+unsigned char A_PW_digits = 6;
+
+unsigned char U_PW[16];
+unsigned char U_PW_digits = 0;
+
+unsigned char unclock_PW_input[16] = {0}; //解锁密码输入值
+unsigned char unclock_PW_input_digits = 0;
+
+unsigned char k_value = 0x88;
+unsigned char k_i = 0;//按键输入次数计数
+
+unsigned char data Sub_second = 0, second = 0;
+
+void delay_ms(unsigned int t);
+void run_timer(void);
+void stop_timer(void);
+bit CMP_PW(void);//比较密码正确与否函数
+bit A_CMP_PW(void);//管理员密码判断
+void alarm(void);
+unsigned char key_press(void);
+void dig_led_display(void);
+unsigned char GetKey(void);
+
+
+
+
+///////////////////////////////////////////////////////////////////////
+
+//主函数
+void main()
+{
+    unsigned char i = 0;
+    pw_err = 0;
+    state = U_PW_SET;
+    buzzer = 0;
+
+    ledbuf[0] = 0x3e;
+    ledbuf[1] = SEG_HORI;
+    ledbuf[2] = SEG_HORI;
+    ledbuf[3] = SEG_HORI;
+    ledbuf[4] = SEG_HORI;
+    ledbuf[5] = SEG_HORI;
+
+    while(1) {
+
+        dig_led_display();  //led数码管显示
+        if (key_press()) k_value = GetKey(); //有按键按下则取键值
+
+        switch(state) {
+
+        //管理员密码设置状态---------------------------------------------------------!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!该功能被屏蔽掉！！！！！！！！！！！！！！！！！！！！！！！！
+        case A_PW_SET:  //管理员密码设置状态
+
+            //管理员的密码必须设置为高强度密码，这里限制为8--16位，每个位为16进制值（该功能代码未完成）
+            if(k_i < 16 && k_value < 0x10) {
+                A_PW[k_i] = k_value;
+                k_i++;
+
+                ledbuf[4] = led_map[(k_i / 10) % 10];
+                ledbuf[5] = led_map[k_i % 10];
+                k_value = 0x88;
+            }
+
+            if(k_value == K_OK) {/*OK按键按下*/
+
+                state = U_PW_SET;
+
+                //这里添加下一状态的初始化代码
+                k_i = 0;
+                k_value = 0x88;  //“0x88”电路中所有按键不会生成该值
+                ledbuf[0] = 0x3e;
+                ledbuf[1] = SEG_HORI;
+                ledbuf[2] = SEG_HORI;
+                ledbuf[3] = SEG_HORI;
+                ledbuf[4] = SEG_HORI;
+                ledbuf[5] = SEG_HORI;
+            }
+            break;
+        //管理员密码设置状态结束-------------------------------------------------------!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!该功能被屏蔽掉！！！！！！！！！！！！！！！！！！！！！！！！
+
+
+        //用户密码设置状态-------------------------------------------------------------
+        case U_PW_SET:
+
+            //用户的密码可以设置为任意强度，即1--16位，每个位为16进制值
+            if(k_i < 16 && k_value < 0x10) {
+                U_PW[k_i] = k_value;
+                k_i++;
+                U_PW_digits++;
+
+                ledbuf[4] = led_map[(k_i / 10) % 10];
+                ledbuf[5] = led_map[k_i % 10];
+                k_value = 0x88;
+            }
+
+            if(k_value == K_OK) {/*OK按键按下*/
+
+                state = LOCKED;
+                //这里添加下一状态的初始化代码
+                k_i = 0;
+                unclock_PW_input_digits = 0;
+
+                state = LOCKED; //进入上锁状态，等等用户输入密码解锁
+                ledbuf[0] = SEG_0;
+                ledbuf[1] = SEG_F;
+                ledbuf[2] = SEG_F;
+                ledbuf[3] = SEG_0;
+                ledbuf[4] = SEG_0;
+                ledbuf[5] = SEG_0;
+            }
+            break;
+        //用户密码设置状态结束-----------------------------------------------------
+
+
+        //上锁状态-----------------------------------------------------------------
+        case LOCKED:
+
+            if(k_value < 0x10) {//如果是密码按键值
+                state = U_UNLOCK_PW;//进入下一状态
+                k_i = 0;
+                unclock_PW_input_digits = 0;
+
+                ledbuf[0] = SEG_HORI;
+                ledbuf[1] = SEG_HORI;
+                ledbuf[2] = SEG_HORI;
+                ledbuf[3] = SEG_HORI;
+                ledbuf[4] = led_map[(k_i / 10) % 10];
+                ledbuf[5] = led_map[k_i % 10];
+
+                run_timer();//启动秒定时
+            }
+            break;
+        //上锁状态结束---------------------------------------------------------------
+
+
+
+
+        //解锁状态----------------------------------------------------------------
+        case UNLOCKED:
+
+            if(k_value < 0x10) {//如果是密码按键值
+                state = U_UNLOCK_PW;//进入下一状态
+                k_i = 0;
+                unclock_PW_input_digits = 0;
+
+                ledbuf[0] = SEG_HORI;
+                ledbuf[1] = SEG_HORI;
+                ledbuf[2] = SEG_HORI;
+                ledbuf[3] = SEG_HORI;
+                ledbuf[4] = led_map[(k_i / 10) % 10];
+                ledbuf[5] = led_map[k_i % 10];
+
+                run_timer();//启动秒定时
+            }
+
+            break;
+        //解锁状态结束----------------------------------------------------------------
+
+
+        //锁定状态-----------------------------------------------------------------
+        case LOCKING:
+
+            if(k_value < 0x10) {//如果密码按键区有键按下
+                state = A_UNLOCK_PW;//进入管理员解锁密码(Unlock password)状态
+                k_i = 0;
+                unclock_PW_input_digits = 0;
+
+                ledbuf[0] = SEG_HORI;
+                ledbuf[1] = SEG_HORI;
+                ledbuf[2] = SEG_HORI;
+                ledbuf[3] = SEG_HORI;
+                ledbuf[4] = led_map[(k_i / 10) % 10];
+                ledbuf[5] = led_map[k_i % 10];
+
+                run_timer();//启动秒定时
+            }
+            break;
+        //锁定状态结束-----------------------------------------------------------------
+
+
+        //用户解锁密码(Unlock password)状态---------------------------------------------------------
+        case U_UNLOCK_PW:
+
+            if(second >= 12) {		//12秒定时时间到
+                stop_timer();
+                state = LOCKING;  //用户未完成密码输入进入锁死状态
+                pw_err = 0;
+                pw_ok =0;
+                ledbuf[0] = SEG_NULL;
+                ledbuf[1] = SEG_F;
+                ledbuf[2] = SEG_F;
+                ledbuf[3] = SEG_F;
+                ledbuf[4] = SEG_F;
+                ledbuf[5] = SEG_NULL;
+                alarm();  //报警
+                ledbuf[4] = SEG_F;
+                ledbuf[5] = SEG_F;
+            } else {
+
+                if(k_i < 16 && k_value < 0x10) {  //保存输入的密码
+                    unclock_PW_input[k_i] = k_value;
+                    k_i++;
+                    unclock_PW_input_digits++;
+
+                    ledbuf[4] = led_map[(k_i / 10) % 10];
+                    ledbuf[5] = led_map[k_i % 10];
+                    k_value = 0x88;//保证密码不会自动输入
+                }
+
+                if(k_value == K_OK) {/*OK按键按下*/
+
+                    if(CMP_PW()) { //如果密码正确
+
+                        state = UNLOCKED;//密码一致则进入解锁状态
+                        pw_err = 0;
+                        pw_ok++;
+
+                        ledbuf[0] = SEG_8;
+                        ledbuf[1] = SEG_8;
+                        ledbuf[2] = SEG_8;
+                        ledbuf[3] = led_map[(pw_ok / 100) % 10];   //将解码正确次数送显示
+                        ledbuf[4] = led_map[(pw_ok / 10) % 10];
+                        ledbuf[5] = led_map[pw_ok % 10];
+
+                        //这里可以添加开锁动作功能代码，如控制继电器闭合带动电机开锁
+
+                    } else { //如果密码不正确
+
+                        pw_err++;
+
+                        if(pw_err == 3) { //密码不一致则判断密码输入错误是否达到3次
+                            state = LOCKING;  //达到3次密码输入错误，进入锁死状态，只有管理员才能解锁
+                            pw_err = 0;
+                            pw_ok =0;
+
+                            alarm();
+
+                        } else if(pw_err < 3 ) { //密码输入错误小于3次
+                            state = LOCKED; //返回上锁状态，等等用户重新输入
+                            ledbuf[0] = SEG_0;
+                            ledbuf[1] = SEG_F;
+                            ledbuf[2] = SEG_F;
+                            ledbuf[3] = led_map[(pw_ok / 100) % 10];   //将解码正确次数送显示
+                            ledbuf[4] = led_map[(pw_ok / 10) % 10];
+                            ledbuf[5] = led_map[pw_ok % 10];
+                        }
+                    }
+                }
+            }
+            break;
+        //用户解锁密码(Unlock password)状态状态结束-------------------------------------
+
+
+        //管理员解锁密码(Unlock password)状态-------------------------------------------
+        case A_UNLOCK_PW:
+
+            if(second >= 12) {		//12秒定时时间到
+                stop_timer();
+                state = LOCKING;  //用户未完成密码输入进入锁死状态
+                pw_err = 0;
+                pw_ok =0;
+
+                alarm();  //报警
+
+            } else {
+
+                if(k_i < 16 && k_value < 0x10) {  //保存输入的密码
+                    unclock_PW_input[k_i] = k_value;
+                    k_i++;
+                    unclock_PW_input_digits++;
+
+                    ledbuf[4] = led_map[(k_i / 10) % 10];
+                    ledbuf[5] = led_map[k_i % 10];
+                    k_value = 0x88;//保证密码不会自动输入
+                }
+
+                if(k_value == K_OK) {/*OK按键按下*/
+
+                    if(A_CMP_PW()) { //如果密码正确
+
+                        state = UNLOCKED;//密码一致则进入解锁状态
+                        pw_err = 0;
+
+                        ledbuf[0] = SEG_8;
+                        ledbuf[1] = SEG_8;
+                        ledbuf[2] = SEG_8;
+                        ledbuf[3] = led_map[(pw_ok / 100) % 10];   //将解码正确次数送显示
+                        ledbuf[4] = led_map[(pw_ok / 10) % 10];
+                        ledbuf[5] = led_map[pw_ok % 10];
+
+                        //这里可以添加开锁动作功能代码，如控制继电器闭合带动电机开锁
+
+                    } else {
+
+                        pw_err++;
+
+                        alarm();//错误状态代码写完时删除，并把 pw_err 改为合理值 例如 3或 5+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////这个注释内部的是要实现更多功能的，现有功能用不到 这些代码/////////////////////
+
+                        if(pw_err == 253) { //密码不一致则判断密码输入错误是否达到3次
+                            state = LOCKING;  //达到3次密码输入错误，error状态，只有管理员重新上电重启才能解锁
+                            pw_err = 0;
+                            pw_ok =0;
+                            ledbuf[0] = SEG_d;
+                            ledbuf[1] = SEG_d;
+                            ledbuf[2] = SEG_d;
+                            ledbuf[3] = SEG_d;
+                            ledbuf[4] = SEG_d;
+                            ledbuf[5] = SEG_d;
+
+                            alarm();
+
+                            state = LOCKING;//这里改成error状态！！！！！！！！！！！！！！！！！！
+
+
+                        } else if(pw_err < 253) { //密码输入错误小于3次
+                            state = LOCKING;//返回锁定状态，等等用户重新输入
+
+                            state = LOCKING;  //达到3次密码输入错误，error状态，只有管理员重新上电重启才能解锁
+                            pw_err = 0;
+                            pw_ok =0;
+                            ledbuf[0] = SEG_F;
+                            ledbuf[1] = SEG_F;
+                            ledbuf[2] = SEG_F;
+                            ledbuf[3] = SEG_F;
+                            ledbuf[4] = SEG_F;
+                            ledbuf[5] = SEG_F;
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////这个注释内部的是要实现更多功能的，现有功能用不到 这些代码/////////////////////
+                        }
+                    }
+                }
+            }
+            break;
+            //管理员解锁密码(Unlock password)状态结束---------------------------------------
+        }
+    }
+}
+
+/************************************ ms 延时函数 ****************************/
+void delay_ms(unsigned int t)
+{
+    unsigned int i, j;
+    for(i = 0; i < t; i++)
+        for(j = 0; j < 120; j++)
+            ;
+}
+
+/************************** LED数码管显示函数 ***********************/
+void dig_led_display(void)
+{
+    unsigned char i;
+    unsigned char led_bit;
+
+    led_bit = 0x20;       // ???????
+    for (i = 0; i < 6; i++) {
+        *dig_led_seg = SEG_NULL;  //灭所有LED段输出
+        *dig_led_bit = 0;         // 关闭位显示
+        *dig_led_seg = ledbuf[i];
+        *dig_led_bit = led_bit;   // led数码管为选通
+        delay_ms(1);
+        led_bit >>= 1;            //移到下一位显示
+    }
+}
+
+/************ 有键按下返回1，否则返回0； ***********************/
+unsigned char key_press(void)
+{
+    *p_column = 0x00;            // 列置低电平
+    return (~*p_row & 0x0f);   // 没有键按下返回0，否则是非零值
+}
+code unsigned char KeyTable[] = {   // 键盘表
+    0x16, 0x15, 0x14, 0xff,
+    0x13, 0x12, 0x11, 0x10,
+    0x0d, 0x0c, 0x0b, 0x0a,
+    0x0e, 0x03, 0x06, 0x09,
+    0x0f, 0x02, 0x05, 0x08,
+    0x00, 0x01, 0x04, 0x07
+};
+
+//获取键值函数
+unsigned char GetKey(void)
+{
+    unsigned char Pos;
+    unsigned char i;
+    unsigned char k;
+
+    i = 6;
+    Pos = 0x20;
+    do {
+        *p_column = ~ Pos;
+        Pos >>= 1;
+        k = ~(*p_row) & 0x0f;
+    } while ((--i != 0) && (k == 0));
+    if (k != 0) {
+        i *= 4;
+        if (k & 2)
+            i += 1;
+        else if (k & 4)
+            i += 2;
+        else if (k & 8)
+            i += 3;
+
+        *p_column = 0;
+        do {
+            delay_ms(15);
+//            dig_led_display();//保证按键抬起前led数码管有显示
+        } while (key_press());
+
+        return(KeyTable[i]);
+    } else return(0xff);
+}
+
+//定时器中断服务函数----------------用于12s定时
+void Timer0() interrupt 1
+{
+    TH0 = (65536 - 50000) / 256;
+    TL0 = (65536 - 50000) % 256;
+    Sub_second++;
+    if(Sub_second == 20) {
+        Sub_second = 0;
+        second++;
+    }
+}
+
+//启动定时器
+void run_timer(void)
+{
+    second = 0;
+    Sub_second = 0;
+    TMOD = 0x01;
+    TH0 = (65536 - 50000) / 256;
+    TL0 = (65536 - 50000) % 256;
+    EA = 1;
+    ET0 = 1;
+    TR0 = 1; //启动定时器
+}
+
+//关闭定时器
+void stop_timer(void)
+{
+    TR0 = 0; //停止定时器
+}
+
+
+//报警--通过蜂鸣器和数码管闪烁报警
+void alarm(void)
+{
+    unsigned char i, j;
+
+    ledbuf[0] = SEG_NULL;
+    ledbuf[1] = SEG_F;
+    ledbuf[2] = SEG_F;
+    ledbuf[3] = SEG_F;
+    ledbuf[4] = SEG_F;
+    ledbuf[5] = SEG_NULL;
+
+    for(i = 0; i < 8; i++) {
+        buzzer = 1;
+        delay_ms(300);
+        buzzer = 0;
+        for(j = 0; j < 50; j++) {
+            dig_led_display();
+        }
+    }
+    ledbuf[0] = SEG_F;
+    ledbuf[5] = SEG_F;
+}
+
+
+//判断用户密码正误，
+bit CMP_PW(void)
+{
+    unsigned char i;
+    if(U_PW_digits == unclock_PW_input_digits) { //如果 “用户密码位数” 等于 “解锁密码输入位数” 则比较各个相对应位是否相等； 否则位数不相等一定是密码错误
+
+        for(i=0; i < U_PW_digits; i++)
+            if(U_PW[unclock_PW_input_digits - 1] != unclock_PW_input[unclock_PW_input_digits - 1]) break;
+
+        if(i == unclock_PW_input_digits)//如果比较到最后一位，说明密码正确
+            return 1;
+    }
+    return 0;
+}
+
+//判断管理员密码正误，
+bit A_CMP_PW(void)
+{
+    unsigned char i;
+    if(A_PW_digits == unclock_PW_input_digits) { //如果 “用户密码位数” 等于 “解锁密码输入位数” 则比较各个相对应位是否相等； 否则位数不相等一定是密码错误
+
+        for(i=0; i < A_PW_digits; i++)
+            if(A_PW[unclock_PW_input_digits - 1] != unclock_PW_input[unclock_PW_input_digits - 1]) break;
+
+        if(i == unclock_PW_input_digits)//如果比较到最后一位，说明密码正确
+            return 1;
+    }
+    return 0;
+}
